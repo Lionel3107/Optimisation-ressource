@@ -21,6 +21,8 @@ DUREES_OCCUPATION = {
 def assigner_ressources_localement(patients, hopital, assignations_temps, hopital_name):
     assignes = []
     non_assignes = []
+    # Trier par ESI pour prioriser les urgences (ESI 1 en premier)
+    patients = sorted(patients, key=lambda p: p['esi'])
     for patient in patients:
         toutes_ressources_dispo = all(
             ressource in hopital['ressources'] and hopital['ressources'][ressource] > 0 
@@ -30,7 +32,13 @@ def assigner_ressources_localement(patients, hopital, assignations_temps, hopita
             assignes.append(patient)
             for ressource in patient['besoins']:
                 hopital['ressources'][ressource] -= 1
-                assignations_temps.append({'patient': patient['id'], 'ressource': ressource, 'duree': DUREES_OCCUPATION[ressource], 'temps_restant': DUREES_OCCUPATION[ressource], 'hopital': hopital_name})
+                assignations_temps.append({
+                    'patient': patient['id'], 
+                    'ressource': ressource, 
+                    'duree': DUREES_OCCUPATION[ressource], 
+                    'temps_restant': DUREES_OCCUPATION[ressource], 
+                    'hopital': hopital_name
+                })
         else:
             non_assignes.append(patient)
     return assignes, non_assignes
@@ -38,11 +46,14 @@ def assigner_ressources_localement(patients, hopital, assignations_temps, hopita
 def gerer_transferts(non_assignes, hopitaux, hopital_local='A', assignations_temps=None):
     transferes = {}
     patients_toujours_non_assignes = []
+    # Trier par ESI pour prioriser les urgences
+    non_assignes = sorted(non_assignes, key=lambda p: p['esi'])
     for patient in non_assignes:
         options_transfert = []
         for h_name, h_data in hopitaux.items():
             if h_name != hopital_local:
                 temps_transport = hopitaux[h_name]['distances']['A'] / 60
+                # Vérifier que le temps de transfert est strictement inférieur à la fenêtre
                 if temps_transport < patient['fenetre']:
                     toutes_ressources_dispo = all(
                         ressource in h_data['ressources'] and h_data['ressources'][ressource] > 0 
@@ -52,13 +63,20 @@ def gerer_transferts(non_assignes, hopitaux, hopital_local='A', assignations_tem
                         reserve = sum(h_data['ressources'][ressource] for ressource in patient['besoins'] if ressource in h_data['ressources'])
                         options_transfert.append((h_name, temps_transport, reserve))
         if options_transfert:
+            # Choisir l’hôpital avec le meilleur temps de transfert et le plus de ressources
             meilleur_hopital = sorted(options_transfert, key=lambda x: (x[1], -x[2]))[0]
             h_name, temps_transport, _ = meilleur_hopital
             transferes[patient['id']] = {'hopital': h_name, 'temps_transfert': temps_transport}
             for ressource in patient['besoins']:
                 hopitaux[h_name]['ressources'][ressource] -= 1
                 if assignations_temps is not None:
-                    assignations_temps.append({'patient': patient['id'], 'ressource': ressource, 'duree': DUREES_OCCUPATION[ressource], 'temps_restant': DUREES_OCCUPATION[ressource], 'hopital': h_name})
+                    assignations_temps.append({
+                        'patient': patient['id'], 
+                        'ressource': ressource, 
+                        'duree': DUREES_OCCUPATION[ressource], 
+                        'temps_restant': DUREES_OCCUPATION[ressource], 
+                        'hopital': h_name
+                    })
         else:
             patients_toujours_non_assignes.append(patient)
     return transferes, patients_toujours_non_assignes
@@ -67,7 +85,7 @@ def simuler_temps(assignations_temps, hopitaux, delta_temps=1):
     for assignation in assignations_temps[:]:
         assignation['temps_restant'] -= delta_temps
         if assignation['temps_restant'] <= 0:
-            hopitaux[assignation['hopital']]['ressources'][assignation['ressource']] += 1  # Correction ici
+            hopitaux[assignation['hopital']]['ressources'][assignation['ressource']] += 1
             assignations_temps.remove(assignation)
 
 def evaluer_modele(patients, hopitaux, assignations_temps, transferes):
@@ -93,7 +111,7 @@ def evaluer_modele(patients, hopitaux, assignations_temps, transferes):
             )
             if toutes_ressources_dispo:
                 ressources_adéquates += 1
-        if patient['esi'] == 1 and hopital and (temps_transfert == 0 or temps_transfert <= patient['fenetre']):
+        if patient['esi'] == 1 and hopital and hopital != 'Non assigné' and (temps_transfert == 0 or temps_transfert <= patient['fenetre']):
             esi_1_reussis += 1
         if patient['id'] in transferes and temps_transfert <= patient['fenetre']:
             transferts_valides += 1
@@ -124,6 +142,10 @@ def index():
 def evaluer():
     data = request.json
     patients = data.get('patients', [])
+    # Ajuster les fenêtres temporelles pour éviter 0
+    for patient in patients:
+        if patient['fenetre'] < 0.1:
+            patient['fenetre'] = 0.1  # Fenêtre minimale de 0.1h
     hopitaux_sim = deepcopy(hopitaux_init)
     assignations_temps = []
     
